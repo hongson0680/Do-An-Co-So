@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Search } from 'lucide-react';
 import { nguoiDungApi, NguoiDung, CreateNguoiDungDTO } from '../../../api/nguoidung.api';
 import { vaiTroApi, VaiTro } from '../../../api/vaitro.api';
 import { chiNhanhApi } from '../../../api/chinhanh.api';
-import Table from '../../../components/common/Table';
+import Table, { Pagination } from '../../../components/common/Table';
 import Button from '../../../components/common/Button';
 import Input from '../../../components/common/Input';
 import Select from '../../../components/common/Select';
@@ -17,6 +17,13 @@ const UserList = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [branches, setBranches] = useState<{ maChiNhanh: number; tenChiNhanh: string }[]>([]);
   const [vaiTros, setVaiTros] = useState<VaiTro[]>([]);
+  const [pagination, setPagination] = useState({
+    pageNumber: 1,
+    pageSize: 10,
+    totalCount: 0,
+    totalPages: 0,
+  });
+  const [search, setSearch] = useState('');
   const [formData, setFormData] = useState<CreateNguoiDungDTO>({
     tenDangNhap: '',
     matKhau: '',
@@ -30,16 +37,28 @@ const UserList = () => {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    loadUsers();
     loadBranches();
     loadVaiTros();
   }, []);
 
+  useEffect(() => {
+    loadUsers();
+  }, [pagination.pageNumber, pagination.pageSize, search]);
+
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const response = await nguoiDungApi.getAll({ pageSize: 100 });
+      const response = await nguoiDungApi.getAll({
+        pageNumber: pagination.pageNumber,
+        pageSize: pagination.pageSize,
+        search: search || undefined,
+      });
       setUsers(response.data.items);
+      setPagination((prev) => ({
+        ...prev,
+        totalCount: response.data.totalCount,
+        totalPages: Math.ceil(response.data.totalCount / prev.pageSize),
+      }));
     } catch (error) {
       console.error('Failed:', error);
     } finally {
@@ -154,8 +173,31 @@ const UserList = () => {
         <h1 className="text-2xl font-bold text-gray-800">Người dùng</h1>
         <Button leftIcon={<Plus size={18} />} onClick={() => setModalOpen(true)}>Thêm người dùng</Button>
       </div>
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <div className="relative max-w-sm">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPagination((prev) => ({ ...prev, pageNumber: 1 }));
+            }}
+            placeholder="Tìm theo tên hoặc tên đăng nhập..."
+            className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      </div>
       <div className="bg-white rounded-xl shadow-sm border border-gray-100">
         <Table columns={columns} data={users} emptyText="Chưa có người dùng" />
+        <Pagination
+          currentPage={pagination.pageNumber}
+          totalPages={pagination.totalPages}
+          totalItems={pagination.totalCount}
+          pageSize={pagination.pageSize}
+          onPageChange={(page) => setPagination((prev) => ({ ...prev, pageNumber: page }))}
+          onPageSizeChange={(size) => setPagination((prev) => ({ ...prev, pageSize: size, pageNumber: 1 }))}
+        />
       </div>
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Thêm người dùng" size="lg"
         footer={<><Button variant="outline" onClick={() => setModalOpen(false)}>Hủy</Button><Button loading={saving} onClick={handleSave}>Lưu</Button></>}>

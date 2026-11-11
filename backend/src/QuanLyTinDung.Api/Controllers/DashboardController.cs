@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using QuanLyTinDung.Application.DTOs;
 using QuanLyTinDung.Infrastructure.Data;
+using QuanLyTinDung.Api.Helpers;
 
 namespace QuanLyTinDung.Api.Controllers;
 
@@ -18,36 +19,71 @@ public class DashboardController : ControllerBase
         _context = context;
     }
 
+    /// <summary>
+    /// Danh sách user thuộc chi nhánh hiện tại (dùng để lọc hồ sơ vay).
+    /// Trả về null nghĩa là user không bị giới hạn theo chi nhánh → thấy toàn hệ thống.
+    /// </summary>
+    private async Task<List<long>?> GetBranchUserIdsAsync()
+    {
+        if (!User.ShouldScopeByBranch())
+            return null;
+
+        var branchId = User.CurrentBranchId()!.Value;
+        return await _context.NguoiDungs
+            .Where(u => u.MaChiNhanh == branchId)
+            .Select(u => u.MaNguoiDung)
+            .ToListAsync();
+    }
+
     [HttpGet]
     public async Task<ActionResult<DashboardDto>> GetStats()
     {
         var now = DateTime.Now;
         var firstDayOfMonth = new DateTime(now.Year, now.Month, 1);
 
-        var tongKhachHang = await _context.KhachHangs.CountAsync();
-        var tongHoSoVay = await _context.HoSoVays.CountAsync();
-        var tongHopDong = await _context.HopDongVays.CountAsync();
-        var tongGiaiNgan = await _context.HopDongVays.Where(h => h.NgayGiaiNgan.HasValue).SumAsync(h => h.TienGoc);
+        // Cô lập theo chi nhánh: CREDIT_OFFICER chỉ thấy hồ sơ của cán bộ
+        // cùng chi nhánh (cùng cơ chế với HoSoVayController). Vai trung tâm
+        // (thẩm định, phê duyệt, ngân quỹ, báo cáo) và ADMIN thấy toàn hệ thống.
+        var branchUserIds = await GetBranchUserIdsAsync();
+        bool coLoc = branchUserIds != null;
 
-        var hoSoMoi = await _context.HoSoVays.CountAsync(h => h.TrangThai == "MOI");
+        var hoSoQuery = _context.HoSoVays.AsQueryable();
+        var hopDongQuery = _context.HopDongVays.AsQueryable();
+
+        if (coLoc)
+        {
+            var ids = branchUserIds!;
+            hoSoQuery = hoSoQuery.Where(h => ids.Contains(h.MaCanBo));
+            hopDongQuery = hopDongQuery.Where(h =>
+                _context.HoSoVays.Any(hs => hs.MaHoSo == h.MaHoSo && ids.Contains(hs.MaCanBo)));
+        }
+
+        // Khách hàng dùng chung toàn hệ thống (bảng khach_hang không có cột chi
+        // nhánh — xem docs/rbac-matrix.md), nên số lượng KHÔNG lọc theo chi nhánh.
+        var tongKhachHang = await _context.KhachHangs.CountAsync();
+        var tongHoSoVay = await hoSoQuery.CountAsync();
+        var tongHopDong = await hopDongQuery.CountAsync();
+        var tongGiaiNgan = await hopDongQuery.Where(h => h.NgayGiaiNgan.HasValue).SumAsync(h => h.TienGoc);
+
+        var hoSoMoi = await hoSoQuery.CountAsync(h => h.TrangThai == "MOI");
         // "Đang xử lý" = chưa kết thúc quy trình: loại MOI (chưa xử lý),
         // DA_DONG / TU_CHOI (đã kết thúc), DA_GIAI_NGAN (đã giải ngân),
         // DA_LAP_HOP_DONG (đã lập hợp đồng → sang bước ngân quỹ).
-        var hoSoDangXyLy = await _context.HoSoVays.CountAsync(h =>
+        var hoSoDangXyLy = await hoSoQuery.CountAsync(h =>
             h.TrangThai != "MOI" && h.TrangThai != "DA_DONG" && h.TrangThai != "TU_CHOI"
             && h.TrangThai != "DA_GIAI_NGAN" && h.TrangThai != "DA_LAP_HOP_DONG");
         // "Đã duyệt" = hồ sơ đã được phê duyệt (chưa tính giải ngân).
         // Trước đây đếm DA_GIAI_NGAN → sai nghĩa với tiêu đề.
-        var hoSoDaDuyet = await _context.HoSoVays.CountAsync(h =>
+        var hoSoDaDuyet = await hoSoQuery.CountAsync(h =>
             h.TrangThai == "DA_PHE_DUYET" || h.TrangThai == "DA_LAP_HOP_DONG" || h.TrangThai == "DA_GIAI_NGAN");
-        var hoSoTuChoi = await _context.HoSoVays.CountAsync(h => h.TrangThai == "TU_CHOI");
+        var hoSoTuChoi = await hoSoQuery.CountAsync(h => h.TrangThai == "TU_CHOI");
 
-        var tienGiaiNganThangNay = await _context.HopDongVays
+        var tienGiaiNganThangNay = await hopDongQuery
             .Where(h => h.NgayGiaiNgan.HasValue && h.NgayGiaiNgan >= firstDayOfMonth)
             .SumAsync(h => h.TienGoc);
 
-        var tongHopDongActive = await _context.HopDongVays.CountAsync(h => h.TrangThai == "HOAT_DONG");
-        var hopDongQuaHan = await _context.HopDongVays.CountAsync(h =>
+        var tongHopDongActive = await hopDongQuery.CountAsync(h => h.TrangThai == "HOAT_DONG");
+        var hopDongQuaHan = await hopDongQuery.CountAsync(h =>
             h.TrangThai == "QUA_HAN" || h.TrangThai == "QUA_HAN_30" || h.TrangThai == "QUA_HAN_60");
 
         var tiLeQuaHan = tongHopDongActive > 0 ? (decimal)hopDongQuaHan / tongHopDongActive * 100 : 0;
@@ -73,7 +109,12 @@ public class DashboardController : ControllerBase
     [HttpGet("ho-so-theo-trang-thai")]
     public async Task<ActionResult<List<HoSoTheoTrangThaiDto>>> GetHoSoByStatus()
     {
-        var data = await _context.HoSoVays
+        var branchUserIds = await GetBranchUserIdsAsync();
+        var query = _context.HoSoVays.AsQueryable();
+        if (branchUserIds != null)
+            query = query.Where(h => branchUserIds.Contains(h.MaCanBo));
+
+        var data = await query
             .GroupBy(h => h.TrangThai)
             .Select(g => new HoSoTheoTrangThaiDto
             {
@@ -96,7 +137,13 @@ public class DashboardController : ControllerBase
         var startDate = DateTime.Now.AddMonths(-11);
         var firstOfMonth = new DateTime(startDate.Year, startDate.Month, 1);
 
-        var raw = await _context.HopDongVays
+        var hopDongQuery = _context.HopDongVays.AsQueryable();
+        var branchUserIds = await GetBranchUserIdsAsync();
+        if (branchUserIds != null)
+            hopDongQuery = hopDongQuery.Where(h =>
+                _context.HoSoVays.Any(hs => hs.MaHoSo == h.MaHoSo && branchUserIds.Contains(hs.MaCanBo)));
+
+        var raw = await hopDongQuery
             .Where(h => h.NgayGiaiNgan.HasValue && h.NgayGiaiNgan >= firstOfMonth)
             .Select(h => new { h.NgayGiaiNgan, h.TienGoc })
             .ToListAsync();
@@ -126,7 +173,16 @@ public class DashboardController : ControllerBase
     [HttpGet("top-khach-hang")]
     public async Task<ActionResult<List<TopKhachHangDto>>> GetTopKhachHang([FromQuery] int top = 10)
     {
-        var data = await _context.HopDongVays
+        // Guard: client gửi top <= 0 → Take âm → lỗi runtime
+        top = Math.Clamp(top, 1, 100);
+
+        var hopDongQuery = _context.HopDongVays.AsQueryable();
+        var branchUserIds = await GetBranchUserIdsAsync();
+        if (branchUserIds != null)
+            hopDongQuery = hopDongQuery.Where(h =>
+                _context.HoSoVays.Any(hs => hs.MaHoSo == h.MaHoSo && branchUserIds.Contains(hs.MaCanBo)));
+
+        var data = await hopDongQuery
             .Where(h => h.NgayGiaiNgan.HasValue)
             .GroupBy(h => h.MaHoSo)
             .Select(g => new

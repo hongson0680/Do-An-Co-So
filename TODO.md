@@ -1,95 +1,37 @@
 # TODO — Hệ thống Quản lý Tín dụng
 
-Cập nhật: sau Batch 1–4 (fix nghiệp vụ) + push lên GitHub.
+Cập nhật: sau Batch 5 (vá bảo mật + chất lượng).
 
-Trạng thái build hiện tại: **backend 0 error**, **frontend `tsc` 0 error**.
-
----
-
-## 🔴 P1 — Bảo mật (làm trước tiên)
-
-### 1. Route frontend không chặn theo quyền
-- **File:** `src/routes/index.tsx`
-- **Vấn đề:** `ProtectedRoute` chỉ kiểm tra `isAuthenticated`, không kiểm tra vai trò.
-  Ai đăng nhập được cũng gõ `/users`, `/branches`, `/audit-log` vào URL là thấy trang.
-- **Hệ quả:** Backend có chặn (401/403) nên **không lộ dữ liệu**, nhưng UI vẫn hiện rồi mới báo lỗi → UX tệ.
-- **Cách sửa:** Thêm component `RoleRoute` (hoặc mở rộng `ProtectedRoute`) nhận `perm` và kiểm tra `can(PERM.X)` từ `usePermission()`.
-
-### 2. `GET /nguoi-dung`, `GET /vai-tro`, `GET /chi-nhanh` không giới hạn vai
-- **Files:**
-  - `backend/src/QuanLyTinDung.Api/Controllers/NguoiDungController.cs:26`
-  - `backend/src/QuanLyTinDung.Api/Controllers/VaiTroController.cs:23`
-  - `backend/src/QuanLyTinDung.Api/Controllers/ChiNhanhController.cs:55`
-- **Vấn đề:** Chỉ có `[Authorize]` (bất kỳ ai đã đăng nhập đều đọc được).
-- **Đối chiếu RBAC:** `MANAGE_USERS` / `MANAGE_BRANCHES` phải thuộc ADMIN.
-  (`NhatKyHeThongController` đã chặn ADMIN ✓ — dùng làm mẫu.)
-- **Cách sửa:** Thêm `[Authorize(Roles = Roles.AdminOnly)]` cho các endpoint danh sách này.
-
-### 3. JWT secret từng nằm trong repo (đã xử lý một phần)
-- **Đã làm:** `appsettings.json` giờ chỉ có placeholder; secret thật nằm ở `appsettings.Development.json` (git-ignored).
-- **Còn lại:**
-  - [ ] **Đổi giá trị secret** — giá trị cũ đã public qua commit đầu tiên.
-  - [ ] Dùng biến môi trường / `dotnet user-secrets` cho môi trường thật (production).
-  - [ ] Ghi hướng dẫn setup vào `README.md` (bước tạo `appsettings.Development.json` khi clone).
-
-### 4. Không có lockout / rate-limit đăng nhập
-- **File:** `backend/src/QuanLyTinDung.Api/Controllers/AuthController.cs`
-- **Vấn đề:** `Login` không giới hạn số lần thử → đoán mật khẩu không bị chặn.
-- **Rủi ro thực tế:** Mật khẩu seed yếu (`admin123`, `nhanvien123`, `duyet1123`…).
-- **Cách sửa:** Thêm bộ đếm số lần thử sai theo username/IP, khóa tài khoản tạm thời sau N lần. Có thể dùng `IMemoryCache` (không cần đổi cấu trúc DB).
+Trạng thái build hiện tại: **backend 0 error**, **frontend `tsc` 0 error**, **test 18/18 pass**.
 
 ---
 
-## 🟠 P2 — Chất lượng & vận hành
+## ✅ Hoàn thành — Batch 5
 
-### 5. Không có test project nào
-- **Hiện trạng:** `backend/src/` chỉ có 4 project (Api / Application / Domain / Infrastructure), **không có project test**.
-- **Hệ quả:** Mọi fix đều chỉ verify bằng `dotnet build` + `tsc`, không có regression test.
-- **Nên test trước:**
-  - [ ] `CreateLichTraNo` — công thức dư nợ giảm dần, `Tổng gốc = Tổng lãi + Gốc` khi làm tròn.
-  - [ ] Luồng phê duyệt: `YEU_CAU_BO_SUNG` không bị ghi đè thành `TU_CHOI` (đã fix nhưng chưa có test).
-  - [ ] Hạn mức phê duyệt L1/L2 (`CreditPolicy.ApproverL1Limit` / `ApproverL2Limit`).
-
-### 6. Không có git trước đây — ✅ ĐÃ XỬ LÝ
-- Đã `git init`, commit `c550e2b`, push lên `hongson0680/Do-An-Co-So` (branch `main`).
-- Đã thêm `.gitignore` loại `node_modules/`, `bin/`, `obj/`, `dist/`, file secret.
-
-### 7. Token hết hạn 24 giờ, không có refresh token
-- **File:** `backend/src/QuanLyTinDung.Api/Controllers/AuthController.cs:152` (`expires: DateTime.Now.AddHours(24)`)
-- **Hệ quả:** Mỗi 24 giờ user bị đá ra, phải đăng nhập lại.
-- **Cách sửa:** Thêm refresh token (cần cân nhắc thêm bảng → **DDL**, hoặc dùng token stateless dài hạn + cơ chế refresh in-memory).
-
-### 8. `GET /api/nguoi-dung` trả toàn bộ user, không phân trang
-- **File:** `backend/src/QuanLyTinDung.Api/Controllers/NguoiDungController.cs:26`
-- **Cách sửa:** Thêm `pageNumber`/`pageSize` + trả `PagedResult<NguoiDungDto>` (pattern đã có sẵn ở các controller khác).
-
-### 9. `DashboardController` chưa giới hạn vai
-- **File:** `backend/src/QuanLyTinDung.Api/Controllers/DashboardController.cs:11`
-- **Vấn đề:** Mọi user đăng nhập đều xem được số liệu toàn hệ thống (tiền vay, tổng giải ngân, top khách hàng).
-- **Cách sửa:** Chặn theo `Roles.Reporters` hoặc tách endpoint nhạy cảm (tiền) cho ADMIN.
-
-### 10. Trạng thái `QUA_HAN` của hợp đồng không có logic tự chuyển
-- **Hiện trạng:** `QUA_HAN` / `QUA_HAN_30` / `QUA_HAN_60` chỉ được *đọc* ở `DashboardController.cs:51`.
-  Không tìm thấy chỗ nào **set** các trạng thái này.
-- **Cách sửa:** Thêm job nền (hosted service) quét `lich_tra_no` quá hạn → cập nhật `hop_dong_vay.trang_thai`.
-  **Lưu ý:** trigger hiện có có thể đã xử lý → kiểm tra `sys.triggers` trước khi làm.
-
-### 11. Mật khẩu seed yếu + nằm trong source
-- **File:** `backend/src/QuanLyTinDung.Api/Program.cs`
-- **Hiện trạng:** `admin123`, `nhanvien123`, `thamdinh123`, `duyet1123`, `duyet2123`, `ketoan123`, `baocao123`
-- **Đã làm:** Bọc seed trong cờ `Seed:Enabled` (mặc định `true` = giữ hành vi cũ).
-  Đặt `"Seed": { "Enabled": false }` trong `appsettings.json` → app **không chèn row nào**.
-- **Còn lại:** Đổi mật khẩu mặc định thành chuỗi random in ra console lúc seed, hoặc bắt user đổi mật khẩu sau lần đăng nhập đầu.
+| # | Vấn đề | Đã làm |
+|---|--------|--------|
+| 1 | Route frontend không chặn theo quyền | Component `RoleRoute` (check `can(perm)`), bọc toàn bộ route trong `src/routes/index.tsx` |
+| 2 | `GET /nguoi-dung`, `/vai-tro` không giới hạn vai | Thêm `[Authorize(Roles = Roles.AdminOnly)]`. `GET /chi-nhanh` **giữ mở** — matrix RBAC quy định mọi vai được R chi nhánh |
+| 3 | JWT secret public qua git | Đổi key mới (openssl rand 48 bytes) trong `appsettings.Development.json` (git-ignored) |
+| 4 | Không lockout đăng nhập | `LoginAttemptService` (IMemoryCache): khóa 15 phút sau 5 lần sai, trả 429. Cấu hình `LoginSecurity:*` |
+| 5 | Không có test project | `backend/tests/QuanLyTinDung.Tests` (xUnit): 9 test `LoanScheduleService` (tách logic lãi suất ra khỏi controller), 9 test `ApprovalPolicyService` (tách logic hạn mức L1/L2) |
+| 6 | Token 24h, không refresh | Access 8h + refresh 7 ngày (stateless, không DDL). Endpoint `POST /auth/refresh`, interceptor axios tự refresh nền + retry |
+| 7 | `GET /nguoi-dung` không phân trang | Thêm `pageNumber`/`pageSize`/`search`, frontend UserList có ô tìm + Pagination |
+| 8 | Dashboard lộ số liệu toàn hệ thống | Cô lập theo chi nhánh (CREDIT_OFFICER chỉ thấy CN mình, cùng cơ chế `ShouldScopeByBranch()`). Không chặn role vì matrix cho 7 vai đều xem dashboard |
+| 9 | `QUA_HAN` không có logic tự chuyển | Hosted service `OverdueContractJob`: quét `lich_tra_no` quá hạn mỗi 60 phút, set QUA_HAN / _30 / _60. Trigger không đụng `hop_dong_vay` nên không xung đột |
+| 10 | Mật khẩu seed yếu | Seed DB mới: mật khẩu ngẫu nhiên 14 ký tự, in ra console khi khởi động, không còn `admin123` trong source |
+| 12 | `MucDoRuiRo` 2 format | Kiểm tra DB: 0 row, trigger + converter đã ghi format có dấu khớp CHECK constraint → **không cần migration** |
 
 ---
 
-## 🟡 P3 — Ghi nhận, ưu tiên thấp
+## 🟡 P3 — Còn lại (ưu tiên thấp)
 
 - [ ] **Danh sách khách hàng dùng chung** — bảng `khach_hang` không có cột chi nhánh.
   Muốn cô lập theo chi nhánh thì **bắt buộc phải DDL** (ngoài phạm vi đã cho phép). Đã ghi rõ trong `docs/rbac-matrix.md`.
-- [ ] **`MucDoRuiRo` lưu 2 format** (có dấu `"Thấp"` / không dấu `"Thap"`) — đã có converter xử lý cả hai nên chạy đúng, nhưng dữ liệu hỗn hợp. Cần migration dữ liệu (UPDATE) nếu muốn thống nhất.
 - [ ] **PDF export chưa chạy thật** — `QuestPDF` đã cài, build OK, nhưng **chưa verify** file PDF render đúng. Cần chạy app + xuất thử.
 - [ ] **`thanhToanApi.getByLichTraNo` đã xoá** — backend có `GET /hop-dong/{id}/lich-tra-no` nhưng không có route theo lịch trả nợ. Nếu cần màn hình "lịch trả nợ" thì đang thiếu endpoint.
+- [ ] **Refresh token không revocable** — stateless (không bảng lưu) nên không thu hồi được khi đổi mật khẩu / logout. Nếu cần, phải thêm bảng (DDL).
+- [ ] **Login lockout reset khi restart API** — bộ đếm ở IMemoryCache, thiết kế có chủ đích (không đụng DB). Muốn durable thì cần thêm bảng.
 
 ---
 

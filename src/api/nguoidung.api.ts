@@ -26,8 +26,11 @@ export interface CreateNguoiDungDTO {
 }
 
 export const nguoiDungApi = {
-  getAll: (params?: { pageSize?: number }) =>
-    apiClient.get<{ items: NguoiDung[]; totalCount: number }>('/nguoidung', { params }),
+  getAll: (params?: { pageNumber?: number; pageSize?: number; search?: string }) =>
+    apiClient.get<{ items: NguoiDung[]; totalCount: number; pageNumber: number; pageSize: number }>(
+      '/nguoidung',
+      { params }
+    ),
 
   getById: (id: number) =>
     apiClient.get<NguoiDung>(`/nguoidung/${id}`),

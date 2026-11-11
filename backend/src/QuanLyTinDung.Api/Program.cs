@@ -26,6 +26,15 @@ builder.Services.AddSingleton<QuanLyTinDung.Api.Services.IExportService, QuanLyT
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<ILoginAttemptService, LoginAttemptService>();
 
+// Lịch trả nợ (công thức dư nợ giảm dần) - tách khỏi controller để test được
+builder.Services.AddSingleton<ILoanScheduleService, LoanScheduleService>();
+
+// Hạn mức & cấp phê duyệt theo vai - tách khỏi controller để test được
+builder.Services.AddSingleton<IApprovalPolicyService, ApprovalPolicyService>();
+
+// Job nền: đánh dấu hợp đồng quá hạn (trước đây không có gì set trạng thái này)
+builder.Services.AddHostedService<QuanLyTinDung.Api.Services.OverdueContractJob>();
+
 // Database
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
@@ -152,73 +161,98 @@ using (var scope = app.Services.CreateScope())
 
     if (seedEnabled && !context.NguoiDungs.Any())
     {
-        // Seed NguoiDung (Users) - Mật khẩu: admin123, nhanvien123
-        var adminVaiTro = context.VaiTros.FirstOrDefault(v => v.MaVaiTroHienThi == "ADMIN");
-        var cbvVaiTro = context.VaiTros.FirstOrDefault(v => v.MaVaiTroHienThi == "CREDIT_OFFICER");
-        var cnHCM = context.ChiNhanhs.FirstOrDefault(c => c.MaChiNhanhHienThi == "CN001");
+    // Trước đây seed mật khẩu yếu cố định (admin123, nhanvien123…) nằm trong
+    // source — dễ đoán, dễ brute-force. Giờ sinh mật khẩu ngẫu nhiên khi seed
+    // và in ra console để admin biết rồi đổi. Chỉ chạy với DB mới (chưa có user).
+    string RandomPassword(int length = 14)
+    {
+        const string chars = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#%";
+        var bytes = new byte[length];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        return new string(bytes.Select(b => chars[b % chars.Length]).ToArray());
+    }
+    var seedCredentials = new List<(string User, string Pass)>();
 
-        // Chỉ tạo user nếu có đủ VaiTro và ChiNhanh
-        if (adminVaiTro != null && cnHCM != null)
+    var adminPw = RandomPassword();
+    var cbvPw = RandomPassword();
+    seedCredentials.Add(("admin", adminPw));
+    seedCredentials.Add(("nhanvien", cbvPw));
+
+    var adminVaiTro = context.VaiTros.FirstOrDefault(v => v.MaVaiTroHienThi == "ADMIN");
+    var cbvVaiTro = context.VaiTros.FirstOrDefault(v => v.MaVaiTroHienThi == "CREDIT_OFFICER");
+    var cnHCM = context.ChiNhanhs.FirstOrDefault(c => c.MaChiNhanhHienThi == "CN001");
+
+    // Chỉ tạo user nếu có đủ VaiTro và ChiNhanh
+    if (adminVaiTro != null && cnHCM != null)
+    {
+        context.NguoiDungs.Add(new NguoiDung
         {
-            context.NguoiDungs.Add(new NguoiDung
-            {
-                TenDangNhap = "admin",
-                MatKhauBam = BCrypt.Net.BCrypt.HashPassword("admin123"),
-                HoTen = "Administrator",
-                Email = "admin@qltdbank.com",
-                MaVaiTro = adminVaiTro.MaVaiTro,
-                MaChiNhanh = cnHCM.MaChiNhanh,
-                TrangThai = "HOAT_DONG",
-                NgayTao = DateTime.Now
-            });
-            context.SaveChanges();
-        }
-
-        if (cbvVaiTro != null && cnHCM != null)
-        {
-            context.NguoiDungs.Add(new NguoiDung
-            {
-                TenDangNhap = "nhanvien",
-                MatKhauBam = BCrypt.Net.BCrypt.HashPassword("nhanvien123"),
-                HoTen = "Nguyễn Thị Nhân Viên",
-                Email = "nhanvien@qltdbank.com",
-                MaVaiTro = cbvVaiTro.MaVaiTro,
-                MaChiNhanh = cnHCM.MaChiNhanh,
-                TrangThai = "HOAT_DONG",
-                NgayTao = DateTime.Now
-            });
-            context.SaveChanges();
-        }
-
-        // User cho các vai còn lại để có đủ người vận hành từng bước luồng.
-        // Mật khẩu chung: <tên đăng nhập>123
-        var taiKhoanMau = new (string TenDangNhap, string HoTen, string VaiTro, string MatKhau)[]
-        {
-            ("thamdinh", "Lê Thị Thẩm Định", "APPRAISER", "thamdinh123"),
-            ("duyet1", "Phạm Văn Duyệt Một", "APPROVER_L1", "duyet1123"),
-            ("duyet2", "Võ Thị Duyệt Hai", "APPROVER_L2", "duyet2123"),
-            ("ketoan", "Đỗ Thị Kế Toán", "ACCOUNTANT", "ketoan123"),
-            ("baocao", "Bùn Văn Báo Cáo", "REPORT_VIEWER", "baocao123"),
-        };
-
-        foreach (var tk in taiKhoanMau)
-        {
-            var vaiTro = context.VaiTros.FirstOrDefault(v => v.MaVaiTroHienThi == tk.VaiTro);
-            if (vaiTro == null || cnHCM == null) continue;
-
-            context.NguoiDungs.Add(new NguoiDung
-            {
-                TenDangNhap = tk.TenDangNhap,
-                MatKhauBam = BCrypt.Net.BCrypt.HashPassword(tk.MatKhau),
-                HoTen = tk.HoTen,
-                Email = $"{tk.TenDangNhap}@qltdbank.com",
-                MaVaiTro = vaiTro.MaVaiTro,
-                MaChiNhanh = cnHCM.MaChiNhanh,
-                TrangThai = "HOAT_DONG",
-                NgayTao = DateTime.Now
-            });
-        }
+            TenDangNhap = "admin",
+            MatKhauBam = BCrypt.Net.BCrypt.HashPassword(adminPw),
+            HoTen = "Administrator",
+            Email = "admin@qltdbank.com",
+            MaVaiTro = adminVaiTro.MaVaiTro,
+            MaChiNhanh = cnHCM.MaChiNhanh,
+            TrangThai = "HOAT_DONG",
+            NgayTao = DateTime.Now
+        });
         context.SaveChanges();
+    }
+
+    if (cbvVaiTro != null && cnHCM != null)
+    {
+        context.NguoiDungs.Add(new NguoiDung
+        {
+            TenDangNhap = "nhanvien",
+            MatKhauBam = BCrypt.Net.BCrypt.HashPassword(cbvPw),
+            HoTen = "Nguyễn Thị Nhân Viên",
+            Email = "nhanvien@qltdbank.com",
+            MaVaiTro = cbvVaiTro.MaVaiTro,
+            MaChiNhanh = cnHCM.MaChiNhanh,
+            TrangThai = "HOAT_DONG",
+            NgayTao = DateTime.Now
+        });
+        context.SaveChanges();
+    }
+
+    // User cho các vai còn lại để có đủ người vận hành từng bước luồng.
+    // Mỗi tài khoản sinh mật khẩu ngẫu nhiên riêng.
+    var taiKhoanMau = new (string TenDangNhap, string HoTen, string VaiTro)[]
+    {
+        ("thamdinh", "Lê Thị Thẩm Định", "APPRAISER"),
+        ("duyet1", "Phạm Văn Duyệt Một", "APPROVER_L1"),
+        ("duyet2", "Võ Thị Duyệt Hai", "APPROVER_L2"),
+        ("ketoan", "Đỗ Thị Kế Toán", "ACCOUNTANT"),
+        ("baocao", "Bùn Văn Báo Cáo", "REPORT_VIEWER"),
+    };
+
+    foreach (var tk in taiKhoanMau)
+    {
+        var vaiTro = context.VaiTros.FirstOrDefault(v => v.MaVaiTroHienThi == tk.VaiTro);
+        if (vaiTro == null || cnHCM == null) continue;
+
+        var pw = RandomPassword();
+        seedCredentials.Add((tk.TenDangNhap, pw));
+
+        context.NguoiDungs.Add(new NguoiDung
+        {
+            TenDangNhap = tk.TenDangNhap,
+            MatKhauBam = BCrypt.Net.BCrypt.HashPassword(pw),
+            HoTen = tk.HoTen,
+            Email = $"{tk.TenDangNhap}@qltdbank.com",
+            MaVaiTro = vaiTro.MaVaiTro,
+            MaChiNhanh = cnHCM.MaChiNhanh,
+            TrangThai = "HOAT_DONG",
+            NgayTao = DateTime.Now
+        });
+    }
+    context.SaveChanges();
+
+    // In credentials vừa tạo để admin lưu trữ / đổi mật khẩu.
+    Console.WriteLine("\n[Seed] Đã tạo tài khoản mặc định (DB mới). Mật khẩu ngẫu nhiên, dùng 1 lần, VUI LÒNG ĐỔI SAU KHI ĐĂNG NHẬP:");
+    foreach (var (user, pass) in seedCredentials)
+        Console.WriteLine($"   {user,-10} {pass}");
+    Console.WriteLine();
     }
 }
 

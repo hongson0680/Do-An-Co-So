@@ -37,14 +37,81 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor - Handle auth errors
+// Response interceptor: access token hết hạn → tự refresh nền, retry request gốc.
+// Chỉ đá về /login khi refresh token cũng thất bại (đúng 401 không phải request
+// /auth/refresh). Trước đây không có refresh, user bị đá ra mỗi 24 giờ.
+let isRefreshing = false;
+let refreshSubscribers: Array<(token: string) => void> = [];
+
+const onRefreshed = (token: string) => {
+  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers = [];
+};
+
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('auth-storage');
-      window.location.href = '/login';
+  async (error) => {
+    const originalRequest = error.config;
+    const isAuthCall = originalRequest?.url?.includes('/auth/');
+
+    if (error.response?.status === 401 && !originalRequest._retry && !isAuthCall) {
+      if (isRefreshing) {
+        // Một request khác đang refresh → chờ token mới rồi retry
+        return new Promise((resolve) => {
+          refreshSubscribers.push((token: string) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            resolve(apiClient(originalRequest));
+          });
+        });
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      const stored = localStorage.getItem('auth-storage');
+      let refreshToken: string | null = null;
+      try {
+        refreshToken = JSON.parse(stored || 'null')?.state?.refreshToken ?? null;
+      } catch {
+        refreshToken = null;
+      }
+
+      try {
+        if (!refreshToken) throw new Error('No refresh token');
+
+        const { data } = await axios.post(
+          `${API_BASE_URL}/auth/refresh`,
+          { refreshToken },
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+
+        const newToken = data.token;
+        localStorage.setItem(
+          'auth-storage',
+          JSON.stringify({
+            state: { ...JSON.parse(stored || '{}').state, token: newToken, refreshToken: data.refreshToken },
+            version: 0,
+          })
+        );
+
+        onRefreshed(newToken);
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        return apiClient(originalRequest);
+      } catch {
+        // Refresh thất bại → token cũ, đăng nhập lại
+        localStorage.removeItem('auth-storage');
+        window.location.href = '/login';
+      } finally {
+        isRefreshing = false;
+      }
     }
+
+    if (error.response?.status === 401 && isAuthCall) {
+      // Login/profile thất bại: chỉ xóa state local, không redirect
+      // (tránh vòng lặp /login → 401 → /login)
+      localStorage.removeItem('auth-storage');
+    }
+
     return Promise.reject(error);
   }
 );

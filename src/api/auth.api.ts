@@ -7,6 +7,8 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   token: string;
+  refreshToken: string;
+  expiresIn: number;
   user: {
     maNguoiDung: number;
     tenDangNhap: string;

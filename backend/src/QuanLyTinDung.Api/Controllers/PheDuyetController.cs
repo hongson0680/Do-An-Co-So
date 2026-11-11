@@ -20,12 +20,15 @@ public class PheDuyetController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IAuditLogService _auditLog;
     private readonly INotificationService _notification;
+    private readonly IApprovalPolicyService _approvalPolicy;
 
-    public PheDuyetController(AppDbContext context, IAuditLogService auditLog, INotificationService notification)
+    public PheDuyetController(AppDbContext context, IAuditLogService auditLog,
+        INotificationService notification, IApprovalPolicyService approvalPolicy)
     {
         _context = context;
         _auditLog = auditLog;
         _notification = notification;
+        _approvalPolicy = approvalPolicy;
     }
 
     [HttpGet("ho-so/{hoSoId}")]
@@ -91,21 +94,13 @@ public class PheDuyetController : ControllerBase
 
         // Hạn mức phê duyệt theo cấp (L1 ≤ 500tr, L2 ≤ 5 tỷ; ADMIN không giới hạn)
         // chỉ áp dụng khi DUYET và số tiền vượt hạn mức của vai phê duyệt.
-        if (dto.QuyetDinh == "DA_PHE_DUYET")
+        if (dto.QuyetDinh == "DA_PHE_DUYET" && _approvalPolicy.ExceedsLimit(User.CurrentRole(), dto.SoTienDuocDuyet))
         {
-            decimal? cap = User.CurrentRole() switch
+            var cap = _approvalPolicy.GetLimit(User.CurrentRole());
+            return BadRequest(new
             {
-                Roles.ApproverL1 => CreditPolicy.ApproverL1Limit,
-                Roles.ApproverL2 => CreditPolicy.ApproverL2Limit,
-                _ => null // ADMIN: không giới hạn
-            };
-            if (cap.HasValue && dto.SoTienDuocDuyet > cap.Value)
-            {
-                return BadRequest(new
-                {
-                    message = $"Hạn mức phê duyệt của {User.CurrentRole()} là {cap.Value:N0}đ. Hồ sơ {dto.SoTienDuocDuyet:N0}đ vượt hạn mức → cần cấp phê duyệt cao hơn."
-                });
-            }
+                message = $"Hạn mức phê duyệt của {User.CurrentRole()} là {cap!.Value:N0}đ. Hồ sơ {dto.SoTienDuocDuyet:N0}đ vượt hạn mức → cần cấp phê duyệt cao hơn."
+            });
         }
 
         var userId = long.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
@@ -113,12 +108,7 @@ public class PheDuyetController : ControllerBase
 
         // Cấp phê duyệt ghi vào DB (cap_phe_duyet): 1 = L1, 2 = L2.
         // Trước đây hardcode 1 cho mọi vai → sai dữ liệu cấp phê duyệt.
-        var capPheDuyet = User.CurrentRole() switch
-        {
-            Roles.ApproverL1 => 1,
-            Roles.ApproverL2 => 2,
-            _ => 1 // ADMIN phê duyệt ở cấp 1 mặc định
-        };
+        var capPheDuyet = _approvalPolicy.GetApprovalLevel(User.CurrentRole());
 
         // Dùng raw SQL để tránh lỗi EF Core OUTPUT clause với trigger TRG_pheduyet_check_thamdinh
         long pdId;

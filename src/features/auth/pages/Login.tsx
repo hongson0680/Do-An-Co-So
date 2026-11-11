@@ -24,7 +24,7 @@ const Login = () => {
 
     try {
       const response = await authApi.login(formData);
-      setAuth(response.data.user, response.data.token);
+      setAuth(response.data.user, response.data.token, response.data.refreshToken);
       navigate('/dashboard');
     } catch (err: unknown) {
       const error = err as { response?: { data?: { message?: string } } };

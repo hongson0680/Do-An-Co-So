@@ -11,7 +11,20 @@ public class LoginRequest
 public class LoginResponse
 {
     public string Token { get; set; } = string.Empty;
+
+    /// <summary>Refresh token — dùng để lấy access token mới khi access hết hạn.</summary>
+    public string RefreshToken { get; set; } = string.Empty;
+
+    /// <summary>Số giây còn lại của access token (để frontend hẹn giờ refresh).</summary>
+    public int ExpiresIn { get; set; }
+
     public UserDto User { get; set; } = null!;
+}
+
+public class RefreshTokenRequest
+{
+    [Required(ErrorMessage = "Refresh token không được để trống")]
+    public string RefreshToken { get; set; } = string.Empty;
 }
 
 public class UserDto

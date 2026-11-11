@@ -17,12 +17,15 @@ public class HopDongController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IAuditLogService _auditLog;
     private readonly INotificationService _notification;
+    private readonly ILoanScheduleService _loanSchedule;
 
-    public HopDongController(AppDbContext context, IAuditLogService auditLog, INotificationService notification)
+    public HopDongController(AppDbContext context, IAuditLogService auditLog,
+        INotificationService notification, ILoanScheduleService loanSchedule)
     {
         _context = context;
         _auditLog = auditLog;
         _notification = notification;
+        _loanSchedule = loanSchedule;
     }
 
     [HttpGet]
@@ -231,62 +234,15 @@ public class HopDongController : ControllerBase
 
     private async Task CreateLichTraNo(HopDongVay hopDong)
     {
-        // Tính số kỳ thanh toán theo số tháng giữa 2 ngày
-        var months = ((hopDong.NgayDaoHan.Year - hopDong.NgayBatDau.Year) * 12)
-                   + (hopDong.NgayDaoHan.Month - hopDong.NgayBatDau.Month);
+        // Loan calculation logic (đã tách sang ILoanScheduleService để test được
+        // không cần DB). Hàm thuần, kết quả xác định, không đụng EF.
+        var (kyTraNo, tongPhaiTra) = _loanSchedule.BuildSchedule(
+            hopDong.TienGoc, hopDong.LaiSuat, hopDong.NgayBatDau, hopDong.NgayDaoHan);
 
-        if (months <= 0) months = 1; // Bảo vệ chia cho 0
-
-        // ==== Công thức dư nợ giảm dần (Reducing Balance) ====
-        // Lãi suất tháng = lãi suất năm / 12
-        // Mỗi kỳ:
-        //   Lãi kỳ n = Dư nợ đầu kỳ × lãi suất tháng
-        //   Gốc kỳ n = (Tổng gốc / số kỳ)  ← chia đều
-        //   Tổng trả kỳ n = Gốc + Lãi
-        //   Dư nợ cuối kỳ n = Dư nợ đầu kỳ - Gốc trả
-        //
-        // Lưu ý: Tổng lãi phải trả = Σ(lãi kỳ), KHÔNG dùng công thức gốc/lãi phẳng
-
-        var laiSuatThang = hopDong.LaiSuat / 12m;
-        var gocMoiKy = Math.Round(hopDong.TienGoc / months, 2);
-        var duNoHienTai = hopDong.TienGoc;
-        decimal tongPhaiTra = 0;
-
-        for (int i = 1; i <= months; i++)
+        foreach (var ky in kyTraNo)
         {
-            // Lãi kỳ này = dư nợ hiện tại × lãi suất tháng
-            var laiKy = Math.Round(duNoHienTai * laiSuatThang, 2);
-
-            // Kỳ cuối: điều chỉnh gốc để dư nợ về đúng 0 (tránh sai số làm tròn)
-            decimal gocKy;
-            if (i == months)
-            {
-                gocKy = duNoHienTai;
-            }
-            else
-            {
-                gocKy = gocMoiKy;
-            }
-
-            duNoHienTai -= gocKy;
-            if (duNoHienTai < 0) duNoHienTai = 0; // tránh âm do làm tròn
-
-            var tongKy = gocKy + laiKy;
-            tongPhaiTra += tongKy;
-
-            var lichTraNo = new LichTraNo
-            {
-                MaHopDong = hopDong.MaHopDong,
-                KyThanhToan = i,
-                NgayDenHan = hopDong.NgayBatDau.AddMonths(i),
-                GocPhaiTra = gocKy,
-                LaiPhaiTra = laiKy,
-                PhiPhat = 0,
-                TrangThai = "CHUA_THANH_TOAN",
-                NgayTao = DateTime.Now
-            };
-
-            _context.LichTraNos.Add(lichTraNo);
+            ky.MaHopDong = hopDong.MaHopDong;
+            _context.LichTraNos.Add(ky);
         }
 
         // Cập nhật tổng phải trả thực tế (không dùng công thức ước lượng cũ)

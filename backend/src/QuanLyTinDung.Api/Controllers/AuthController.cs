@@ -20,14 +20,16 @@ public class AuthController : ControllerBase
     private readonly IConfiguration _config;
     private readonly IAuditLogService _auditLog;
     private readonly ILoginAttemptService _loginAttempts;
+    private readonly ILogger<AuthController> _logger;
 
     public AuthController(AppDbContext context, IConfiguration config, IAuditLogService auditLog,
-        ILoginAttemptService loginAttempts)
+        ILoginAttemptService loginAttempts, ILogger<AuthController> logger)
     {
         _context = context;
         _config = config;
         _auditLog = auditLog;
         _loginAttempts = loginAttempts;
+        _logger = logger;
     }
 
     [HttpPost("login")]
@@ -43,7 +45,7 @@ public class AuthController : ControllerBase
             await _auditLog.LogFromHttpAsync(HttpContext,
                 hanhDong: AuditActions.LOGIN_FAILED,
                 tenThucThe: AuditEntities.NGUOI_DUNG,
-                maThucThe: request.TenDangNhap,
+                maThucThe: lockKey,
                 giaTriMoi: $"Tài khoản đang bị khóa, thử lại sau ~{phút} phút");
             return StatusCode(429, new
             {
@@ -62,7 +64,7 @@ public class AuthController : ControllerBase
             await _auditLog.LogFromHttpAsync(HttpContext,
                 hanhDong: AuditActions.LOGIN_FAILED,
                 tenThucThe: AuditEntities.NGUOI_DUNG,
-                maThucThe: request.TenDangNhap,
+                maThucThe: lockKey,
                 giaTriMoi: "Tên đăng nhập không tồn tại");
             return Unauthorized(new { message = "Tên đăng nhập không tồn tại" });
         }
@@ -96,7 +98,10 @@ public class AuthController : ControllerBase
         await _context.SaveChangesAsync();
 
         // Generate JWT
-        var token = GenerateJwtToken(user.MaNguoiDung, user.TenDangNhap, user.VaiTro!.MaVaiTroHienThi, user.MaChiNhanh);
+        var token = GenerateJwtToken(user.MaNguoiDung, user.TenDangNhap, user.VaiTro!.MaVaiTroHienThi, user.MaChiNhanh, "access");
+        var refreshToken = GenerateJwtToken(user.MaNguoiDung, user.TenDangNhap, user.VaiTro!.MaVaiTroHienThi, user.MaChiNhanh, "refresh");
+
+        var accessExpiry = _config.GetValue<int>("Jwt:AccessExpiryHours", 8);
 
         // Ghi log thành công
         await _auditLog.LogFromHttpAsync(HttpContext,
@@ -107,6 +112,8 @@ public class AuthController : ControllerBase
         return Ok(new LoginResponse
         {
             Token = token,
+            RefreshToken = refreshToken,
+            ExpiresIn = accessExpiry * 3600,
             User = new UserDto
             {
                 MaNguoiDung = user.MaNguoiDung,
@@ -119,6 +126,98 @@ public class AuthController : ControllerBase
                 TenChiNhanh = user.ChiNhanh!.TenChiNhanh
             }
         });
+    }
+
+    /// <summary>
+    /// Đổi refresh token (dài hạn) lấy access token mới — không cần nhập mật khẩu
+    /// lại. Refresh token phải có claim token_type=refresh.
+    ///
+    /// Trước đây access token 24h, không refresh → mỗi ngày user bị đá ra.
+    /// Giờ access 8h, refresh 7 ngày: access hết hạn, app tự refresh nền.
+    /// </summary>
+    [HttpPost("refresh")]
+    public async Task<ActionResult<LoginResponse>> Refresh([FromBody] RefreshTokenRequest request)
+    {
+        // Xác thực refresh token: kiểm tra chữ ký, hạn, issuer/audience, và
+        // claim token_type phải là "refresh" (access token không được dùng để refresh).
+        try
+        {
+            var claims = ValidateRefreshToken(request.RefreshToken);
+
+            var userIdClaim = claims.Claims
+                .FirstOrDefault(c => c.Type == ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !long.TryParse(userIdClaim, out var uid))
+                return Unauthorized(new { message = "Refresh token không hợp lệ" });
+
+            var user = await _context.NguoiDungs
+                .Include(u => u.VaiTro)
+                .Include(u => u.ChiNhanh)
+                .FirstOrDefaultAsync(u => u.MaNguoiDung == uid);
+
+            if (user == null || user.TrangThai != "HOAT_DONG")
+                return Unauthorized(new { message = "Tài khoản không hợp lệ hoặc đã bị khóa" });
+
+            var accessExpiry = _config.GetValue<int>("Jwt:AccessExpiryHours", 8);
+            var newToken = GenerateJwtToken(user.MaNguoiDung, user.TenDangNhap, user.VaiTro!.MaVaiTroHienThi, user.MaChiNhanh, "access");
+
+            return Ok(new LoginResponse
+            {
+                Token = newToken,
+                RefreshToken = GenerateJwtToken(user.MaNguoiDung, user.TenDangNhap, user.VaiTro!.MaVaiTroHienThi, user.MaChiNhanh, "refresh"),
+                ExpiresIn = accessExpiry * 3600,
+                User = new UserDto
+                {
+                    MaNguoiDung = user.MaNguoiDung,
+                    TenDangNhap = user.TenDangNhap,
+                    HoTen = user.HoTen,
+                    Email = user.Email,
+                    MaVaiTro = user.VaiTro!.MaVaiTroHienThi,
+                    TenVaiTro = user.VaiTro!.TenVaiTro,
+                    MaChiNhanh = user.MaChiNhanh,
+                    TenChiNhanh = user.ChiNhanh!.TenChiNhanh
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Refresh token không hợp lệ cho user");
+            return Unauthorized(new { message = "Refresh token không hợp lệ, vui lòng đăng nhập lại" });
+        }
+    }
+
+    /// <summary>
+    /// Đọc & xác thực refresh token (JWT, không kiểm tra audience/issuer trùng
+    /// access token — refresh token cũng dùng cùng secret). Trả về JsonWebToken,
+    /// ném exception nếu token không hợp lệ / hết hạn.
+    /// </summary>
+    private ClaimsPrincipal ValidateRefreshToken(string refreshToken)
+    {
+        if (string.IsNullOrWhiteSpace(refreshToken))
+            throw new ArgumentException("Refresh token không được để trống");
+
+        var handler = new JwtSecurityTokenHandler();
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:Key"]!));
+
+        var principal = handler.ValidateToken(refreshToken, new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = _config["Jwt:Issuer"] ?? "QLTDBank",
+            ValidAudience = _config["Jwt:Audience"] ?? "QLTDBankClient",
+            IssuerSigningKey = key,
+        }, out _);
+
+        if (principal == null)
+            throw new Exception("Token không hợp lệ");
+
+        // Phải là refresh token, không phải access token
+        var tokenType = principal.Claims.FirstOrDefault(c => c.Type == "token_type")?.Value;
+        if (tokenType != "refresh")
+            throw new Exception("Không phải refresh token");
+
+        return principal;
     }
 
     [HttpGet("profile")]
@@ -150,7 +249,8 @@ public class AuthController : ControllerBase
         });
     }
 
-    private string GenerateJwtToken(long userId, string username, string role, long? maChiNhanh = null)
+    private string GenerateJwtToken(long userId, string username, string role, long? maChiNhanh = null,
+        string tokenType = "access")
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:Key"]!));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -162,15 +262,22 @@ public class AuthController : ControllerBase
             new(ClaimTypes.NameIdentifier, userId.ToString()),
             new(ClaimTypes.Name, username),
             new(ClaimTypes.Role, role),
+            new("token_type", tokenType),
         };
         if (maChiNhanh.HasValue)
             claims.Add(new Claim("branch", maChiNhanh.Value.ToString()));
+
+        // Access token: ngắn hạn (mặc định 8h). Refresh token: dài hạn (mặc định
+        // 7 ngày) — user không phải đăng nhập lại, access hết hạn chỉ cần refresh.
+        var expires = tokenType == "refresh"
+            ? DateTime.Now.AddDays(_config.GetValue<int>("Jwt:RefreshExpiryDays", 7))
+            : DateTime.Now.AddHours(_config.GetValue<int>("Jwt:AccessExpiryHours", 8));
 
         var token = new JwtSecurityToken(
             issuer: _config["Jwt:Issuer"],
             audience: _config["Jwt:Audience"],
             claims: claims,
-            expires: DateTime.Now.AddHours(24),
+            expires: expires,
             signingCredentials: credentials
         );
 

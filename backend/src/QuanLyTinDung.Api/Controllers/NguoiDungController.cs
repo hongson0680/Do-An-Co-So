@@ -30,12 +30,25 @@ public class NguoiDungController : ControllerBase
     /// </summary>
     [HttpGet]
     [Authorize(Roles = QuanLyTinDung.Api.Authorization.Roles.AdminOnly)]
-    public async Task<ActionResult<PagedResult<NguoiDungDto>>> GetAll([FromQuery] int pageSize = 100)
+    public async Task<ActionResult<PagedResult<NguoiDungDto>>> GetAll(
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = 10,
+        [FromQuery] string? search = null)
     {
-        var items = await _context.NguoiDungs
-            .Include(u => u.VaiTro)
-            .Include(u => u.ChiNhanh)
+        // Guard: pageNumber/pageSize <= 0 làm Skip/Take âm → 500
+        pageNumber = Math.Max(1, pageNumber);
+        pageSize = Math.Clamp(pageSize, 1, 500);
+
+        var query = _context.NguoiDungs.AsQueryable();
+
+        if (!string.IsNullOrEmpty(search))
+            query = query.Where(u => u.HoTen.Contains(search) || u.TenDangNhap.Contains(search));
+
+        var totalCount = await query.CountAsync();
+
+        var items = await query
             .OrderBy(u => u.HoTen)
+            .Skip((pageNumber - 1) * pageSize)
             .Take(pageSize)
             .Select(u => new NguoiDungDto
             {
@@ -57,8 +70,8 @@ public class NguoiDungController : ControllerBase
         return Ok(new PagedResult<NguoiDungDto>
         {
             Items = items,
-            TotalCount = items.Count,
-            PageNumber = 1,
+            TotalCount = totalCount,
+            PageNumber = pageNumber,
             PageSize = pageSize
         });
     }
