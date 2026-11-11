@@ -1,0 +1,27 @@
+# Build outputs
+node_modules/
+dist/
+bin/
+obj/
+build/
+
+# IDE / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment / local config
+.env
+.env.*
+!.env.example
+
+# Local secrets (JWT key + connection string) — KHÔNG commit, chỉ nằm trên máy local
+backend/src/QuanLyTinDung.Api/appsettings.Development.json
+backend/src/QuanLyTinDung.Api/Properties/launchSettings.json
+
+# Test results
+coverage/
+*.nupkg

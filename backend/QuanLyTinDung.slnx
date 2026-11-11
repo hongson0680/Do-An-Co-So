@@ -1,0 +1,11 @@
+{
+  "solution": {
+    "path": "QuanLyTinDung.slnx",
+    "projects": [
+      "src/QuanLyTinDung.Api/QuanLyTinDung.Api.csproj",
+      "src/QuanLyTinDung.Application/QuanLyTinDung.Application.csproj",
+      "src/QuanLyTinDung.Domain/QuanLyTinDung.Domain.csproj",
+      "src/QuanLyTinDung.Infrastructure/QuanLyTinDung.Infrastructure.csproj"
+    ]
+  }
+}
