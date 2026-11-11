@@ -22,6 +22,10 @@ builder.Services.AddSingleton<IAuditLogService, AuditLogService>();
 builder.Services.AddSingleton<INotificationService, NotificationService>();
 builder.Services.AddSingleton<QuanLyTinDung.Api.Services.IExportService, QuanLyTinDung.Api.Services.ExportService>();
 
+// Memory cache - dùng cho lockout đăng nhập (LoginAttemptService)
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<ILoginAttemptService, LoginAttemptService>();
+
 // Database
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));

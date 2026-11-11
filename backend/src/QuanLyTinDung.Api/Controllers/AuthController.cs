@@ -19,22 +19,38 @@ public class AuthController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IConfiguration _config;
     private readonly IAuditLogService _auditLog;
+    private readonly ILoginAttemptService _loginAttempts;
 
-    public AuthController(AppDbContext context, IConfiguration config, IAuditLogService auditLog)
+    public AuthController(AppDbContext context, IConfiguration config, IAuditLogService auditLog,
+        ILoginAttemptService loginAttempts)
     {
         _context = context;
         _config = config;
         _auditLog = auditLog;
+        _loginAttempts = loginAttempts;
     }
-
-    // Ghi chú: endpoint POST /api/Auth/init từng tạo tài khoản admin với mật khẩu
-    // hardcode và KHÔNG yêu cầu xác thực. Đã xoá vì lộ đường tạo tài khoản quyền cao
-    // cho bất kỳ ai truy cập được API. Tài khoản admin được tạo qua seed của
-    // Program.cs (dành cho DB mới) hoặc thủ công bởi quản trị viên.
 
     [HttpPost("login")]
     public async Task<ActionResult<LoginResponse>> Login([FromBody] LoginRequest request)
     {
+        // ---- Lockout: nếu tài khoản đang bị khóa sau quá nhiều lần sai, chặn sớm.
+        // Trả 429 (không 401) để không bị interceptor "401 → về /login" xử lý nhầm.
+        var lockKey = request.TenDangNhap ?? string.Empty;
+        var remaining = _loginAttempts.GetLockoutRemaining(lockKey);
+        if (remaining > TimeSpan.Zero)
+        {
+            var phút = Math.Ceiling(remaining.TotalMinutes);
+            await _auditLog.LogFromHttpAsync(HttpContext,
+                hanhDong: AuditActions.LOGIN_FAILED,
+                tenThucThe: AuditEntities.NGUOI_DUNG,
+                maThucThe: request.TenDangNhap,
+                giaTriMoi: $"Tài khoản đang bị khóa, thử lại sau ~{phút} phút");
+            return StatusCode(429, new
+            {
+                message = $"Quá nhiều lần thử sai. Vui lòng thử lại sau {phút} phút."
+            });
+        }
+
         var user = await _context.NguoiDungs
             .Include(u => u.VaiTro)
             .Include(u => u.ChiNhanh)
@@ -42,6 +58,7 @@ public class AuthController : ControllerBase
 
         if (user == null)
         {
+            _loginAttempts.RegisterFailure(lockKey);
             await _auditLog.LogFromHttpAsync(HttpContext,
                 hanhDong: AuditActions.LOGIN_FAILED,
                 tenThucThe: AuditEntities.NGUOI_DUNG,
@@ -52,6 +69,7 @@ public class AuthController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(user.MatKhauBam) || !BCrypt.Net.BCrypt.Verify(request.MatKhau, user.MatKhauBam))
         {
+            _loginAttempts.RegisterFailure(lockKey);
             await _auditLog.LogFromHttpAsync(HttpContext,
                 hanhDong: AuditActions.LOGIN_FAILED,
                 tenThucThe: AuditEntities.NGUOI_DUNG,
@@ -59,6 +77,9 @@ public class AuthController : ControllerBase
                 giaTriMoi: "Sai mật khẩu");
             return Unauthorized(new { message = "Mật khẩu không đúng" });
         }
+
+        // Đăng nhập đúng → xoá bộ đếm lỗi để bắt đầu lại.
+        _loginAttempts.Reset(lockKey);
 
         if (user.TrangThai != "HOAT_DONG")
         {

@@ -18,9 +18,11 @@ public class VaiTroController : ControllerBase
     }
 
     /// <summary>
-    /// Lấy tất cả vai trò (cho dropdown chọn role khi tạo/sửa user)
+    /// Lấy tất cả vai trò — chỉ ADMIN (dropdown chọn role khi tạo/sửa user).
+    /// Trước đây chỉ [Authorize] nên mọi vai đã đăng nhập đều đọc được.
     /// </summary>
     [HttpGet]
+    [Authorize(Roles = QuanLyTinDung.Api.Authorization.Roles.AdminOnly)]
     public async Task<ActionResult<IEnumerable<VaiTroDto>>> GetAll([FromQuery] bool? activeOnly = null)
     {
         var query = _context.VaiTros.AsQueryable();

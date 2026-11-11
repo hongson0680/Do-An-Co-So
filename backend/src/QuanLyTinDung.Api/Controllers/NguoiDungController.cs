@@ -23,7 +23,13 @@ public class NguoiDungController : ControllerBase
         _auditLog = auditLog;
     }
 
+    /// <summary>
+    /// Danh sách người dùng — chỉ ADMIN (quản trị người dùng).
+    /// Trước đây chỉ [Authorize] nên mọi vai đã đăng nhập đều đọc được
+    /// danh sách tài khoản (tên đăng nhập, email, vai trò) của toàn hệ thống.
+    /// </summary>
     [HttpGet]
+    [Authorize(Roles = QuanLyTinDung.Api.Authorization.Roles.AdminOnly)]
     public async Task<ActionResult<PagedResult<NguoiDungDto>>> GetAll([FromQuery] int pageSize = 100)
     {
         var items = await _context.NguoiDungs
